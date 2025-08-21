@@ -15,5 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run a one-line script
-        run: echo "This is a one-line script running on Windows."
+      - name: Enable Remote Desktop
+        shell: pwsh
+        run: Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
