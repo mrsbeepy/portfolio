@@ -84,33 +84,9 @@ jobs:
             exit 1
           }
 
-      - name: Start Ngrok
+      - name: Start Ngrok Tunnel
         shell: pwsh
-        run: |
-          $ngrokPath = "$env:ProgramData\chocolatey\bin\ngrok.exe"
-          if (Test-Path $ngrokPath) {
-            Start-Process -FilePath $ngrokPath -ArgumentList "tcp 3389" -NoNewWindow -Wait
-          } else {
-            Write-Host "Ngrok not found at $ngrokPath"
-            exit 1
-          }
-
-      - name: Verify Ngrok Status
-        shell: pwsh
-        run: |
-          $ngrokPath = "$env:ProgramData\chocolatey\bin\ngrok.exe"
-          if (Test-Path $ngrokPath) {
-            $status = & $ngrokPath status
-            if ($status -match "tcp://") {
-              Write-Host "Ngrok is running successfully."
-            } else {  
-              Write-Host "Ngrok is not running as expected."
-              exit 1
-            }
-          } else {
-            Write-Host "Ngrok not found at $ngrokPath"
-            exit 1
-          }
+        run: ngrok tcp 3389 --region eu --log=stdout --log-level=debug --config "$env:ProgramData\chocolatey\lib\ngrok\tools\ngrok.yml" | Out-Null
 
       - name: Stay 12 hrs
         shell: pwsh
