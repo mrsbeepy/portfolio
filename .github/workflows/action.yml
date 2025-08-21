@@ -1,170 +1,19 @@
-name: GitHub Action for Portfolio
+name: Portfolio CI
+
 on:
   push:
-    branches: [main, master]
+    branches:
+      - main
   pull_request:
-    branches: [main, master]
-  workflow_dispatch:
-    inputs:
-      command:
-        description: "Windows command to run"
-        required: true
-        default: 'echo "Hello from Windows!"'
-        type: string
+    branches:
+      - main
 
 jobs:
-  run-windows-command:
+  build:
     runs-on: windows-latest
-    env:
-      NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
-      RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
-      RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Enable RDP, configure user, and start ngrok
-        shell: powershell
-        run: |
-          Write-Host "=== Enable Remote Desktop (RDP) and configure firewall ==="
-          # Allow RDP connections
-          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
-          # Disable Network Level Authentication (NLA) to reduce handshake issues over tunnels
-          New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations" -Name "RDP-Tcp" -Force | Out-Null
-          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 0 -Force
-          # Open firewall for RDP
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
-
-          Write-Host "=== Ensure RDP service is running ==="
-          Set-Service -Name TermService -StartupType Automatic
-          Start-Service -Name TermService
-
-          Write-Host "=== Create RDP user ==="
-          $rdpUser = if ($env:RDP_USERNAME) { $env:RDP_USERNAME } else { 'rdpuser' }
-          # Check provided password complexity; generate strong one if missing or weak
-          $generatedPassword = $false
-          $provided = $env:RDP_PASSWORD
-          $complex = $false
-          if (-not [string]::IsNullOrWhiteSpace($provided)) {
-            $complex = ($provided.Length -ge 12 -and $provided -match '[A-Z]' -and $provided -match '[a-z]' -and $provided -match '\d' -and $provided -match '[^A-Za-z0-9]')
-          }
-          if ($complex) {
-            $rdpPass = $provided
-          } else {
-            Write-Host "Provided password missing or not complex; generating a strong password."
-            $upper   = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.ToCharArray()
-            $lower   = 'abcdefghijklmnopqrstuvwxyz'.ToCharArray()
-            $digits  = '0123456789'.ToCharArray()
-            $symbols = '!@#$%^&*()-_=+[]{}:;,.?'.ToCharArray()
-            $all = $upper + $lower + $digits + $symbols
-
-            $pwdChars = New-Object System.Collections.Generic.List[char]
-            [void]$pwdChars.Add((Get-Random -InputObject $upper))
-            [void]$pwdChars.Add((Get-Random -InputObject $lower))
-            [void]$pwdChars.Add((Get-Random -InputObject $digits))
-            [void]$pwdChars.Add((Get-Random -InputObject $symbols))
-            for ($i=0; $i -lt 16; $i++) { [void]$pwdChars.Add((Get-Random -InputObject $all)) }
-            $rdpPass = -join (Get-Random -InputObject $pwdChars -Count $pwdChars.Count)
-            $generatedPassword = $true
-          }
-          Write-Host "Using RDP user: $rdpUser"
-          $secure = ConvertTo-SecureString $rdpPass -AsPlainText -Force
-          try {
-            Import-Module Microsoft.PowerShell.LocalAccounts -ErrorAction SilentlyContinue | Out-Null
-            if (Get-LocalUser -Name $rdpUser -ErrorAction SilentlyContinue) {
-              Set-LocalUser -Name $rdpUser -Password $secure -PasswordNeverExpires $true
-            } else {
-              New-LocalUser -Name $rdpUser -Password $secure -PasswordNeverExpires -AccountNeverExpires -UserMayNotChangePassword:$false | Out-Null
-            }
-          } catch {
-            Write-Warning "LocalAccounts module unavailable; using NET USER fallback."
-            cmd /c "net user $rdpUser $rdpPass /add" | Out-Null
-          }
-          try {
-            Add-LocalGroupMember -Group "Remote Desktop Users" -Member $rdpUser -ErrorAction SilentlyContinue
-            Add-LocalGroupMember -Group "Administrators" -Member $rdpUser -ErrorAction SilentlyContinue
-          } catch {
-            cmd /c "net localgroup \"Remote Desktop Users\" $rdpUser /add" | Out-Null
-            cmd /c "net localgroup administrators $rdpUser /add" | Out-Null
-          }
-
-          Write-Host "=== Download and configure ngrok v3 ==="
-          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile ngrok.zip
-          Expand-Archive -Path ngrok.zip -DestinationPath . -Force
-
-          $ngrokDir = "$env:USERPROFILE\AppData\Local\ngrok"
-          New-Item -ItemType Directory -Path $ngrokDir -Force | Out-Null
-          if (-not $env:NGROK_AUTHTOKEN) {
-            Write-Error "NGROK_AUTHTOKEN secret is not configured. Add it in your repository settings."
-            throw "Missing NGROK_AUTHTOKEN"
-          }
-          # Configure authtoken and web API in explicit config file (v3)
-          @"
-          authtoken: $($env:NGROK_AUTHTOKEN)
-          web_addr: 127.0.0.1:4040
-          "@ | Set-Content -Path "$ngrokDir\ngrok.yml" -Encoding ASCII
-
-          Write-Host "=== Start ngrok TCP tunnel for RDP ==="
-          $ngrokLog = Join-Path $pwd "ngrok.log"
-          if (Test-Path $ngrokLog) { Remove-Item $ngrokLog -Force }
-          $ngrokArgs = "tcp 3389 --config `"$ngrokDir\ngrok.yml`" --log `"$ngrokLog`" --log-format logfmt --log-level debug"
-          $ngrokProc = Start-Process -FilePath "$pwd\ngrok.exe" -ArgumentList $ngrokArgs -WindowStyle Hidden -PassThru
-          Start-Sleep -Seconds 5
-
-          Write-Host "=== Verify RDP port is listening locally (up to 60s) ==="
-          $listening = $false
-          for ($i=0; $i -lt 30; $i++) {
-            try {
-              $tcpTest = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389 -WarningAction SilentlyContinue
-              if ($tcpTest.TcpTestSucceeded) { $listening = $true; break }
-            } catch {}
-            Start-Sleep -Seconds 2
-          }
-          if (-not $listening) { Write-Warning "Port 3389 is not listening locally. RDP may not be ready." }
-
-          Write-Host "=== Retrieve and print ngrok URL ==="
-          $public = $null
-          for ($i=0; $i -lt 30 -and -not $public; $i++) {
-            try {
-              $response = Invoke-RestMethod -Uri 'http://127.0.0.1:4040/api/tunnels' -ErrorAction Stop
-              $tunnel = $response.tunnels | Where-Object { $_.proto -eq 'tcp' } | Select-Object -First 1
-              if ($tunnel) { $public = ($tunnel.public_url -replace '^tcp://','') }
-            } catch {}
-            if (-not $public) { Start-Sleep -Seconds 2 }
-          }
-          if (-not $public -and (Test-Path $ngrokLog)) {
-            for ($i=0; $i -lt 30 -and -not $public; $i++) {
-              try {
-                $line = Get-Content -Path $ngrokLog -Tail 100 -ErrorAction SilentlyContinue | Select-String -Pattern "url=tcp://"
-                if ($line) {
-                  $m = [regex]::Match($line[-1].ToString(), "url=tcp://([^\s]+)")
-                  if ($m.Success) { $public = $m.Groups[1].Value }
-                }
-              } catch {}
-              if (-not $public) { Start-Sleep -Seconds 2 }
-            }
-          }
-          if ($public) {
-            Write-Host "ngrok RDP URL: $public"
-            "RDP_URL=$public" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          } else {
-            Write-Warning "Could not determine ngrok public URL. Check ngrok.log for details."
-            if ($ngrokProc -and $ngrokProc.HasExited) { Write-Warning "ngrok exited with code $($ngrokProc.ExitCode)" }
-          }
-
-          Write-Host "=== REMOTE DESKTOP CONNECTION INFO ==="
-          Write-Host "Username: $rdpUser"
-          if ($generatedPassword) {
-            Write-Host "Password: $rdpPass"
-          } else {
-            Write-Host "Password: (from secret)"
-          }
-          Write-Host "Use the ngrok URL above to connect via Remote Desktop"
-          Write-Host "Format: host:port (e.g., 0.tcp.ngrok.io:12345)"
-
-      - name: Keep Session Alive for Remote Desktop Access
-        shell: powershell
-        run: |
-          Write-Host "Keeping session alive for 6 hours..."
-          Start-Sleep -Seconds 21600
+      - name: Run a one-line script
+        run: echo "This is a one-line script running on Windows."
