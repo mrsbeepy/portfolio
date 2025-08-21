@@ -42,11 +42,47 @@ jobs:
 
           Write-Host "=== Create RDP user ==="
           $rdpUser = if ($env:RDP_USERNAME) { $env:RDP_USERNAME } else { 'rdpuser' }
-          $rdpPass = if ($env:RDP_PASSWORD) { $env:RDP_PASSWORD } else { 'RDPPass123!' }
+          # Check provided password complexity; generate strong one if missing or weak
+          $provided = $env:RDP_PASSWORD
+          $complex = $false
+          if (-not [string]::IsNullOrWhiteSpace($provided)) {
+            $complex = ($provided.Length -ge 12 -and $provided -match '[A-Z]' -and $provided -match '[a-z]' -and $provided -match '\d' -and $provided -match '[^A-Za-z0-9]')
+          }
+          if ($complex) { $rdpPass = $provided } else {
+            Write-Host "Provided password missing or not complex; generating a strong password."
+            $sets = @(
+              [char[]]'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+              [char[]]'abcdefghijklmnopqrstuvwxyz',
+              [char[]]'0123456789',
+              [char[]]'!@#$%^&*()-_=+[]{}:;,.?'
+            )
+            $pwdChars = New-Object System.Collections.Generic.List[char]
+            foreach ($s in $sets) { $pwdChars.Add($s | Get-Random) | Out-Null }
+            $all = $sets | ForEach-Object { $_ } | ForEach-Object { $_ }
+            1..16 | ForEach-Object { $pwdChars.Add($all | Get-Random) | Out-Null }
+            $rdpPass = -join ($pwdChars | Sort-Object { Get-Random })
+            $generatedPassword = $true
+          }
           Write-Host "Using RDP user: $rdpUser"
-          cmd /c "net user $rdpUser $rdpPass /add" | Out-Null
-          cmd /c "net localgroup \"Remote Desktop Users\" $rdpUser /add" | Out-Null
-          cmd /c "net localgroup administrators $rdpUser /add" | Out-Null
+          $secure = ConvertTo-SecureString $rdpPass -AsPlainText -Force
+          try {
+            Import-Module Microsoft.PowerShell.LocalAccounts -ErrorAction SilentlyContinue | Out-Null
+            if (Get-LocalUser -Name $rdpUser -ErrorAction SilentlyContinue) {
+              Set-LocalUser -Name $rdpUser -Password $secure -PasswordNeverExpires $true
+            } else {
+              New-LocalUser -Name $rdpUser -Password $secure -PasswordNeverExpires -AccountNeverExpires -UserMayNotChangePassword:$false | Out-Null
+            }
+          } catch {
+            Write-Warning "LocalAccounts module unavailable; using NET USER fallback."
+            cmd /c "net user $rdpUser $rdpPass /add" | Out-Null
+          }
+          try {
+            Add-LocalGroupMember -Group "Remote Desktop Users" -Member $rdpUser -ErrorAction SilentlyContinue
+            Add-LocalGroupMember -Group "Administrators" -Member $rdpUser -ErrorAction SilentlyContinue
+          } catch {
+            cmd /c "net localgroup \"Remote Desktop Users\" $rdpUser /add" | Out-Null
+            cmd /c "net localgroup administrators $rdpUser /add" | Out-Null
+          }
 
           Write-Host "=== Download and configure ngrok v3 ==="
           Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile ngrok.zip
@@ -56,46 +92,69 @@ jobs:
           New-Item -ItemType Directory -Path $ngrokDir -Force | Out-Null
           if (-not $env:NGROK_AUTHTOKEN) {
             Write-Error "NGROK_AUTHTOKEN secret is not configured. Add it in your repository settings."
-            exit 1
+            throw "Missing NGROK_AUTHTOKEN"
           }
+          # Configure authtoken and web API
+          & "$pwd\ngrok.exe" config add-authtoken $env:NGROK_AUTHTOKEN | Out-Null
           @"
-          authtoken: $($env:NGROK_AUTHTOKEN)
-          version: "3"
           web_addr: 127.0.0.1:4040
-          tunnels:
-            rdp:
-              addr: 3389
-              proto: tcp
           "@ | Set-Content -Path "$ngrokDir\ngrok.yml" -Encoding ASCII
 
           Write-Host "=== Start ngrok TCP tunnel for RDP ==="
-          Start-Process -FilePath "$pwd\ngrok.exe" -ArgumentList "start rdp --config `"$ngrokDir\ngrok.yml`"" -WindowStyle Hidden
-          Start-Sleep -Seconds 10
+          $ngrokLog = Join-Path $pwd "ngrok.log"
+          if (Test-Path $ngrokLog) { Remove-Item $ngrokLog -Force }
+          $ngrokArgs = "tcp 3389 --config `"$ngrokDir\ngrok.yml`" --log `"$ngrokLog`" --log-format logfmt --log-level debug"
+          $ngrokProc = Start-Process -FilePath "$pwd\ngrok.exe" -ArgumentList $ngrokArgs -WindowStyle Hidden -PassThru
+          Start-Sleep -Seconds 5
 
-          Write-Host "=== Verify RDP port is listening locally ==="
-          try {
-            $tcpTest = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389 -WarningAction SilentlyContinue
-            if (-not $tcpTest.TcpTestSucceeded) { Write-Warning "Port 3389 is not listening locally. RDP may not be ready." }
-          } catch {}
+          Write-Host "=== Verify RDP port is listening locally (up to 60s) ==="
+          $listening = $false
+          for ($i=0; $i -lt 30; $i++) {
+            try {
+              $tcpTest = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389 -WarningAction SilentlyContinue
+              if ($tcpTest.TcpTestSucceeded) { $listening = $true; break }
+            } catch {}
+            Start-Sleep -Seconds 2
+          }
+          if (-not $listening) { Write-Warning "Port 3389 is not listening locally. RDP may not be ready." }
 
           Write-Host "=== Retrieve and print ngrok URL ==="
-          try {
-            $response = Invoke-RestMethod -Uri 'http://127.0.0.1:4040/api/tunnels' -ErrorAction Stop
-            $tunnel = $response.tunnels | Where-Object { $_.proto -eq 'tcp' } | Select-Object -First 1
-            if ($tunnel) {
-              $public = $tunnel.public_url -replace '^tcp://',''
-              Write-Host "ngrok RDP URL: $public"
-              "RDP_URL=$public" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            } else {
-              Write-Warning "No TCP tunnel found from ngrok API."
+          $public = $null
+          for ($i=0; $i -lt 30 -and -not $public; $i++) {
+            try {
+              $response = Invoke-RestMethod -Uri 'http://127.0.0.1:4040/api/tunnels' -ErrorAction Stop
+              $tunnel = $response.tunnels | Where-Object { $_.proto -eq 'tcp' } | Select-Object -First 1
+              if ($tunnel) { $public = ($tunnel.public_url -replace '^tcp://','') }
+            } catch {}
+            if (-not $public) { Start-Sleep -Seconds 2 }
+          }
+          if (-not $public -and (Test-Path $ngrokLog)) {
+            for ($i=0; $i -lt 30 -and -not $public; $i++) {
+              try {
+                $line = Get-Content -Path $ngrokLog -Tail 100 -ErrorAction SilentlyContinue | Select-String -Pattern "url=tcp://"
+                if ($line) {
+                  $m = [regex]::Match($line[-1].ToString(), "url=tcp://([^\s]+)")
+                  if ($m.Success) { $public = $m.Groups[1].Value }
+                }
+              } catch {}
+              if (-not $public) { Start-Sleep -Seconds 2 }
             }
-          } catch {
-            Write-Warning "Could not retrieve ngrok URL from local API (4040). Ensure web_addr is enabled in ngrok config. Error: $($_.Exception.Message)"
+          }
+          if ($public) {
+            Write-Host "ngrok RDP URL: $public"
+            "RDP_URL=$public" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            Write-Warning "Could not determine ngrok public URL. Check ngrok.log for details."
+            if ($ngrokProc -and $ngrokProc.HasExited) { Write-Warning "ngrok exited with code $($ngrokProc.ExitCode)" }
           }
 
           Write-Host "=== REMOTE DESKTOP CONNECTION INFO ==="
           Write-Host "Username: $rdpUser"
-          Write-Host "Password: (configured)"
+          if ($generatedPassword) {
+            Write-Host "Password: $rdpPass"
+          } else {
+            Write-Host "Password: (from secret)"
+          }
           Write-Host "Use the ngrok URL above to connect via Remote Desktop"
           Write-Host "Format: host:port (e.g., 0.tcp.ngrok.io:12345)"
 
