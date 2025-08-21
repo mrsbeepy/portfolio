@@ -62,9 +62,14 @@ jobs:
         shell: pwsh
         run: choco install ngrok -y
 
-      - name: Start Ngrok
+      - name: Configure Ngrok
         shell: pwsh
         run: |
-          $ngrokPath = (Get-Command ngrok).Source
-          Start-Process -FilePath $ngrokPath -ArgumentList 'tcp 3389' -NoNewWindow -Wait
-          Start-Sleep -Seconds 10
+          $ngrokPath = "$env:ProgramFiles\ngrok\ngrok.exe"
+          if (Test-Path $ngrokPath) {
+            & $ngrokPath authtoken 2NSZKcCIGFtFW3yjusLoKZCNF9r_6mQ6wS8TZwy5VYerBRYhu
+            & $ngrokPath tcp 3389
+          } else {
+            Write-Host "Ngrok not found at $ngrokPath"
+            exit 1
+          }
