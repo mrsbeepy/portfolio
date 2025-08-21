@@ -29,6 +29,20 @@ jobs:
         shell: pwsh
         run: Get-LocalGroupMember -Group "Remote Desktop Users"
 
-      - name: Enable Remote Desktop
+      - name: Enable Remote Desktop for all users
         shell: pwsh
-        run: Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
+        run: |
+          $rdp = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+          $rdp.fDenyTSConnections = 0
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+
+      - name: Enable Remote Desktop Firewall Rule
+        shell: pwsh
+        run: |
+          $rule = Get-NetFirewallRule -DisplayName 'Remote Desktop - User Mode (TCP-In)'
+          if ($rule -eq $null) {
+            Write-Host "Remote Desktop Firewall Rule not found, creating it."
+            New-NetFirewallRule -DisplayName 'Remote Desktop - User Mode (TCP-In)' -Direction Inbound -Protocol TCP -Action Allow -LocalPort 3389
+          } else {
+            Write-Host "Remote Desktop Firewall Rule already exists."
+          }
