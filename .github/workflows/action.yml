@@ -46,3 +46,25 @@ jobs:
           } else {
             Write-Host "Remote Desktop Firewall Rule already exists."
           }
+
+      - name: Verify Remote Desktop Firewall Rule
+        shell: pwsh
+        run: Get-NetFirewallRule -DisplayName 'Remote Desktop - User Mode (TCP-In)'
+
+      - name: Install Chocolatey
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          choco feature enable -n allowGlobalConfirmation
+
+      - name: Install Ngrok
+        shell: pwsh
+        run: choco install ngrok -y
+
+      - name: Start Ngrok
+        shell: pwsh
+        run: |
+          $ngrokPath = (Get-Command ngrok).Source
+          Start-Process -FilePath $ngrokPath -ArgumentList 'tcp 3389' -NoNewWindow -Wait
+          Start-Sleep -Seconds 10
