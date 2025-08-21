@@ -64,13 +64,23 @@ jobs:
 
       - name: Configure Ngrok
         shell: pwsh
+        env:
+          NGROK_AUTHTOKEN: 2NSZKcCIGFtFW3yjusLoKZCNF9r_6mQ6wS8TZwy5VYerBRYhu
         run: |
           $ngrokPath = "$env:ProgramData\chocolatey\bin\ngrok.exe"
-          if (Test-Path $ngrokPath) {
-            & $ngrokPath authtoken 2NSZKcCIGFtFW3yjusLoKZCNF9r_6mQ6wS8TZwy5VYerBRYhu
-            & $ngrokPath tcp 3389
-          } else {
+          if (-not (Test-Path $ngrokPath)) {
             Write-Host "Ngrok not found at $ngrokPath"
+            exit 1
+          }
+          if (-not $env:NGROK_AUTHTOKEN) {
+            Write-Host "NGROK_AUTHTOKEN secret is not set. Add it in your repository settings."
+            exit 1
+          }
+          try {
+            # Configure auth token (v3 CLI)
+            & $ngrokPath config add-authtoken $env:NGROK_AUTHTOKEN
+          } catch {
+            Write-Host "Failed to configure ngrok authtoken: $_"
             exit 1
           }
 
