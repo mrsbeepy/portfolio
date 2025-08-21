@@ -43,24 +43,29 @@ jobs:
           Write-Host "=== Create RDP user ==="
           $rdpUser = if ($env:RDP_USERNAME) { $env:RDP_USERNAME } else { 'rdpuser' }
           # Check provided password complexity; generate strong one if missing or weak
+          $generatedPassword = $false
           $provided = $env:RDP_PASSWORD
           $complex = $false
           if (-not [string]::IsNullOrWhiteSpace($provided)) {
             $complex = ($provided.Length -ge 12 -and $provided -match '[A-Z]' -and $provided -match '[a-z]' -and $provided -match '\d' -and $provided -match '[^A-Za-z0-9]')
           }
-          if ($complex) { $rdpPass = $provided } else {
+          if ($complex) {
+            $rdpPass = $provided
+          } else {
             Write-Host "Provided password missing or not complex; generating a strong password."
-            $sets = @(
-              [char[]]'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
-              [char[]]'abcdefghijklmnopqrstuvwxyz',
-              [char[]]'0123456789',
-              [char[]]'!@#$%^&*()-_=+[]{}:;,.?'
-            )
+            $upper   = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.ToCharArray()
+            $lower   = 'abcdefghijklmnopqrstuvwxyz'.ToCharArray()
+            $digits  = '0123456789'.ToCharArray()
+            $symbols = '!@#$%^&*()-_=+[]{}:;,.?'.ToCharArray()
+            $all = $upper + $lower + $digits + $symbols
+
             $pwdChars = New-Object System.Collections.Generic.List[char]
-            foreach ($s in $sets) { $pwdChars.Add($s | Get-Random) | Out-Null }
-            $all = $sets | ForEach-Object { $_ } | ForEach-Object { $_ }
-            1..16 | ForEach-Object { $pwdChars.Add($all | Get-Random) | Out-Null }
-            $rdpPass = -join ($pwdChars | Sort-Object { Get-Random })
+            [void]$pwdChars.Add((Get-Random -InputObject $upper))
+            [void]$pwdChars.Add((Get-Random -InputObject $lower))
+            [void]$pwdChars.Add((Get-Random -InputObject $digits))
+            [void]$pwdChars.Add((Get-Random -InputObject $symbols))
+            for ($i=0; $i -lt 16; $i++) { [void]$pwdChars.Add((Get-Random -InputObject $all)) }
+            $rdpPass = -join (Get-Random -InputObject $pwdChars -Count $pwdChars.Count)
             $generatedPassword = $true
           }
           Write-Host "Using RDP user: $rdpUser"
@@ -94,9 +99,9 @@ jobs:
             Write-Error "NGROK_AUTHTOKEN secret is not configured. Add it in your repository settings."
             throw "Missing NGROK_AUTHTOKEN"
           }
-          # Configure authtoken and web API
-          & "$pwd\ngrok.exe" config add-authtoken $env:NGROK_AUTHTOKEN | Out-Null
+          # Configure authtoken and web API in explicit config file (v3)
           @"
+          authtoken: $($env:NGROK_AUTHTOKEN)
           web_addr: 127.0.0.1:4040
           "@ | Set-Content -Path "$ngrokDir\ngrok.yml" -Encoding ASCII
 
