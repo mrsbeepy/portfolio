@@ -15,6 +15,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Create new user
+        shell: pwsh
+        run: |
+          $password = ConvertTo-SecureString -AsPlainText -Force 'QWE@#$asd234'
+          New-LocalUser -Name "NUser" -Password $password -AccountNeverExpires:$true -Description "Remote Desktop User"
+
+      - name: Add user to Remote Desktop Users group
+        shell: pwsh
+        run: Add-LocalGroupMember -Group "Remote Desktop Users" -Member "NUser"
+
+      - name: Verify User Membership
+        shell: pwsh
+        run: Get-LocalGroupMember -Group "Remote Desktop Users"
+
       - name: Enable Remote Desktop
         shell: pwsh
         run: Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
